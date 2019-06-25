@@ -14,6 +14,7 @@ import pprint
 import shutil
 
 import torch
+import torch.onnx
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
@@ -111,9 +112,7 @@ def main():
     # writer_dict['writer'].add_graph(model, (dump_input, ))
 
     logger.info(get_model_summary(model, dump_input))
-
-    model = torch.nn.DataParallel(model, device_ids=cfg.GPUS).cuda()
-
+    
     # define loss function (criterion) and optimizer
     criterion = JointsMSELoss(
         use_target_weight=cfg.LOSS.USE_TARGET_WEIGHT
@@ -162,60 +161,34 @@ def main():
         final_output_dir, 'checkpoint.pth'
     )
 
-    if cfg.AUTO_RESUME and os.path.exists(checkpoint_file):
-        logger.info("=> loading checkpoint '{}'".format(checkpoint_file))
-        checkpoint = torch.load(checkpoint_file)
-        begin_epoch = checkpoint['epoch']
-        best_perf = checkpoint['perf']
-        last_epoch = checkpoint['epoch']
-        model.load_state_dict(checkpoint['state_dict'])
-
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        logger.info("=> loaded checkpoint '{}' (epoch {})".format(
-            checkpoint_file, checkpoint['epoch']))
-
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, cfg.TRAIN.LR_STEP, cfg.TRAIN.LR_FACTOR,
-        last_epoch=last_epoch
-    )
-
-    for epoch in range(begin_epoch, cfg.TRAIN.END_EPOCH):
-        lr_scheduler.step()
-
-        # train for one epoch
-        train(cfg, train_loader, model, criterion, optimizer, epoch,
-              final_output_dir, tb_log_dir, writer_dict)
-
-
-        # evaluate on validation set
-        perf_indicator = validate(
-            cfg, valid_loader, valid_dataset, model, criterion,
-            final_output_dir, tb_log_dir, writer_dict
-        )
-
-        if perf_indicator >= best_perf:
-            best_perf = perf_indicator
-            best_model = True
-        else:
-            best_model = False
-
-        logger.info('=> saving checkpoint to {}'.format(final_output_dir))
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'model': cfg.MODEL.NAME,
-            'state_dict': model.state_dict(),
-            'best_state_dict': model.module.state_dict(),
-            'perf': perf_indicator,
-            'optimizer': optimizer.state_dict(),
-        }, best_model, final_output_dir)
+    logger.info("=> loading checkpoint '{}'".format(checkpoint_file))
+    checkpoint = torch.load(checkpoint_file)
+    begin_epoch = checkpoint['epoch']
+    best_perf = checkpoint['perf']
+    last_epoch = checkpoint['epoch']
+    #model.load_state_dict(checkpoint['state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    
+    
 
     final_model_state_file = os.path.join(
         final_output_dir, 'final_state.pth'
     )
+
+    state_dict = torch.load(final_model_state_file)
+    # load params
+    model.load_state_dict(state_dict)
+
+
+    #export as pb onnx
+    final_onnx_model_state_file = os.path.join(
+        final_output_dir, 'hrnet.onnx')
+
     logger.info('=> saving final model state to {}'.format(
-        final_model_state_file)
+        final_onnx_model_state_file)
     )
-    torch.save(model.module.state_dict(), final_model_state_file)
+
+    torch.onnx.export(model, dump_input, final_onnx_model_state_file)
    # writer_dict['writer'].close()
 
 
